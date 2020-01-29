@@ -192,8 +192,8 @@ func (n *NIC) disableLocked() *tcpip.Error {
 		// Stop DAD for all the unicast IPv6 endpoints that are in the
 		// permanentTentative state.
 		for _, r := range n.mu.endpoints {
-			if addr := r.ep.ID().LocalAddress; r.getKind() == permanentTentative && header.IsV6UnicastAddress(addr) {
-				n.mu.ndp.stopDuplicateAddressDetection(addr)
+			if addr := r.addrWithPrefix(); r.getKind() == permanentTentative && header.IsV6UnicastAddress(addr.Address) {
+				n.mu.ndp.stopDuplicateAddressDetection(addr, false /* dadConflict */)
 			}
 		}
 
@@ -1017,7 +1017,9 @@ func (n *NIC) removePermanentAddressLocked(addr tcpip.Address) *tcpip.Error {
 	if isIPv6Unicast {
 		// If we are removing a tentative IPv6 unicast address, stop DAD.
 		if kind == permanentTentative {
-			n.mu.ndp.stopDuplicateAddressDetection(addr)
+			if err := n.mu.ndp.stopDuplicateAddressDetection(r.addrWithPrefix(), false /* dadConflict */); err != nil {
+				return err
+			}
 		}
 
 		// If we are removing an address generated via SLAAC, cleanup
@@ -1442,7 +1444,7 @@ func (n *NIC) dupTentativeAddrDetected(addr tcpip.Address) *tcpip.Error {
 		return tcpip.ErrInvalidEndpointState
 	}
 
-	return n.removePermanentAddressLocked(addr)
+	return n.mu.ndp.stopDuplicateAddressDetection(ref.addrWithPrefix(), true /* dadConflict */)
 }
 
 // setNDPConfigs sets the NDP configurations for n.
@@ -1568,6 +1570,13 @@ type referencedNetworkEndpoint struct {
 	// deprecated. That is, when deprecated is true, other endpoints that are not
 	// deprecated should be preferred.
 	deprecated bool
+}
+
+func (r *referencedNetworkEndpoint) addrWithPrefix() tcpip.AddressWithPrefix {
+	return tcpip.AddressWithPrefix{
+		Address:   r.ep.ID().LocalAddress,
+		PrefixLen: r.ep.PrefixLen(),
+	}
 }
 
 func (r *referencedNetworkEndpoint) getKind() networkEndpointKind {
