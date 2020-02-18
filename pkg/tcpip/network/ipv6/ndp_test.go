@@ -62,7 +62,7 @@ func setupStackAndEndpoint(t *testing.T, llladdr, rlladdr tcpip.Address) (*stack
 		t.Fatalf("cannot find protocol instance for network protocol %d", ProtocolNumber)
 	}
 
-	ep, err := netProto.NewEndpoint(0, tcpip.AddressWithPrefix{rlladdr, netProto.DefaultPrefixLen()}, &stubLinkAddressCache{}, &stubDispatcher{}, nil, s)
+	ep, err := netProto.NewEndpoint(0, tcpip.AddressWithPrefix{rlladdr, netProto.DefaultPrefixLen()}, &stubNUDHandler{}, &stubDispatcher{}, nil, s)
 	if err != nil {
 		t.Fatalf("NewEndpoint(_) = _, %s, want = _, nil", err)
 	}
@@ -75,6 +75,23 @@ func setupStackAndEndpoint(t *testing.T, llladdr, rlladdr tcpip.Address) (*stack
 // new entry in the link address cache for the sender of the message.
 func TestNeighorSolicitationWithSourceLinkLayerOption(t *testing.T) {
 	const nicID = 1
+
+	setup := func(t *testing.T) (*stack.Stack, *channel.Endpoint) {
+		t.Helper()
+
+		s := stack.New(stack.Options{
+			NetworkProtocols: []stack.NetworkProtocol{NewProtocol()},
+		})
+		e := channel.New(0, 1280, linkAddr0)
+		if err := s.CreateNIC(nicID, e); err != nil {
+			t.Fatalf("CreateNIC(%d, _) = %s", nicID, err)
+		}
+		if err := s.AddAddress(nicID, ProtocolNumber, lladdr0); err != nil {
+			t.Fatalf("AddAddress(%d, %d, %s) = %s", nicID, ProtocolNumber, lladdr0, err)
+		}
+
+		return s, e
+	}
 
 	tests := []struct {
 		name             string
@@ -98,16 +115,7 @@ func TestNeighorSolicitationWithSourceLinkLayerOption(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := stack.New(stack.Options{
-				NetworkProtocols: []stack.NetworkProtocol{NewProtocol()},
-			})
-			e := channel.New(0, 1280, linkAddr0)
-			if err := s.CreateNIC(nicID, e); err != nil {
-				t.Fatalf("CreateNIC(%d, _) = %s", nicID, err)
-			}
-			if err := s.AddAddress(nicID, ProtocolNumber, lladdr0); err != nil {
-				t.Fatalf("AddAddress(%d, %d, %s) = %s", nicID, ProtocolNumber, lladdr0, err)
-			}
+			s, e := setup(t)
 
 			ndpNSSize := header.ICMPv6NeighborSolicitMinimumSize + len(test.optsBuf)
 			hdr := buffer.NewPrependable(header.IPv6MinimumSize + ndpNSSize)
@@ -139,34 +147,44 @@ func TestNeighorSolicitationWithSourceLinkLayerOption(t *testing.T) {
 				Data: hdr.View().ToVectorisedView(),
 			})
 
-			linkAddr, c, err := s.GetLinkAddress(nicID, lladdr1, lladdr0, ProtocolNumber, nil)
-			if linkAddr != test.expectedLinkAddr {
-				t.Errorf("got link address = %s, want = %s", linkAddr, test.expectedLinkAddr)
+			neighbors, err := s.Neighbors(nicID)
+			if err != nil {
+				t.Fatalf("s.Neighbors(%d): %s", nicID, err)
 			}
 
-			if test.expectedLinkAddr != "" {
-				if err != nil {
-					t.Errorf("s.GetLinkAddress(%d, %s, %s, %d, nil): %s", nicID, lladdr1, lladdr0, ProtocolNumber, err)
+			neighborByAddr := make(map[tcpip.Address]stack.NeighborEntry)
+			for _, n := range neighbors {
+				if _, ok := neighborByAddr[n.Addr]; ok {
+					t.Fatalf("duplicate found for neighbor with addr=%s", n.Addr)
 				}
-				if c != nil {
-					t.Errorf("got unexpected channel")
-				}
+				neighborByAddr[n.Addr] = n
+			}
 
+			neigh, ok := neighborByAddr[lladdr1]
+
+			if len(test.expectedLinkAddr) != 0 {
 				// Invalid count should not have increased.
 				if got := invalid.Value(); got != 0 {
 					t.Errorf("got invalid = %d, want = 0", got)
 				}
-			} else {
-				if err != tcpip.ErrWouldBlock {
-					t.Errorf("got s.GetLinkAddress(%d, %s, %s, %d, nil) = (_, _, %v), want = (_, _, %s)", nicID, lladdr1, lladdr0, ProtocolNumber, err, tcpip.ErrWouldBlock)
-				}
-				if c == nil {
-					t.Errorf("expected channel from call to s.GetLinkAddress(%d, %s, %s, %d, nil)", nicID, lladdr1, lladdr0, ProtocolNumber)
-				}
 
+				if !ok {
+					t.Fatalf("expected a neighbor entry for %q", lladdr1)
+				}
+				if neigh.LinkAddr != test.expectedLinkAddr {
+					t.Errorf("got link address = %s, want = %s", neigh.LinkAddr, test.expectedLinkAddr)
+				}
+				if neigh.State != stack.Stale {
+					t.Errorf("got NUD state = %s, want = %s", neigh.State, stack.Stale)
+				}
+			} else {
 				// Invalid count should have increased.
 				if got := invalid.Value(); got != 1 {
 					t.Errorf("got invalid = %d, want = 1", got)
+				}
+
+				if ok {
+					t.Fatalf("unexpectedly got neighbor entry for %q", lladdr1)
 				}
 			}
 		})
@@ -174,20 +192,20 @@ func TestNeighorSolicitationWithSourceLinkLayerOption(t *testing.T) {
 }
 
 // TestNeighorAdvertisementWithTargetLinkLayerOption tests that receiving a
-// valid NDP NA message with the Target Link Layer Address option results in a
-// new entry in the link address cache for the target of the message.
+// valid NDP NA message with the Target Link Layer Address option does not
+// result in a new entry in the link address cache for the target of the message.
 func TestNeighorAdvertisementWithTargetLinkLayerOption(t *testing.T) {
 	const nicID = 1
 
 	tests := []struct {
-		name             string
-		optsBuf          []byte
-		expectedLinkAddr tcpip.LinkAddress
+		name    string
+		optsBuf []byte
+		isValid bool
 	}{
 		{
-			name:             "Valid",
-			optsBuf:          []byte{2, 1, 2, 3, 4, 5, 6, 7},
-			expectedLinkAddr: "\x02\x03\x04\x05\x06\x07",
+			name:    "Valid",
+			optsBuf: []byte{2, 1, 2, 3, 4, 5, 6, 7},
+			isValid: true,
 		},
 		{
 			name:    "Too Small",
@@ -242,31 +260,30 @@ func TestNeighorAdvertisementWithTargetLinkLayerOption(t *testing.T) {
 				Data: hdr.View().ToVectorisedView(),
 			})
 
-			linkAddr, c, err := s.GetLinkAddress(nicID, lladdr1, lladdr0, ProtocolNumber, nil)
-			if linkAddr != test.expectedLinkAddr {
-				t.Errorf("got link address = %s, want = %s", linkAddr, test.expectedLinkAddr)
+			neighbors, err := s.Neighbors(nicID)
+			if err != nil {
+				t.Fatalf("s.Neighbors(%d): %s", nicID, err)
 			}
 
-			if test.expectedLinkAddr != "" {
-				if err != nil {
-					t.Errorf("s.GetLinkAddress(%d, %s, %s, %d, nil): %s", nicID, lladdr1, lladdr0, ProtocolNumber, err)
+			neighborByAddr := make(map[tcpip.Address]stack.NeighborEntry)
+			for _, n := range neighbors {
+				if _, ok := neighborByAddr[n.Addr]; ok {
+					t.Fatalf("duplicate found for neighbor with addr=%s", n.Addr)
 				}
-				if c != nil {
-					t.Errorf("got unexpected channel")
-				}
+				neighborByAddr[n.Addr] = n
+			}
 
+			_, ok := neighborByAddr[lladdr1]
+			if ok {
+				t.Errorf("unexpectedly got neighbor entry for %q", lladdr1)
+			}
+
+			if test.isValid {
 				// Invalid count should not have increased.
 				if got := invalid.Value(); got != 0 {
 					t.Errorf("got invalid = %d, want = 0", got)
 				}
 			} else {
-				if err != tcpip.ErrWouldBlock {
-					t.Errorf("got s.GetLinkAddress(%d, %s, %s, %d, nil) = (_, _, %v), want = (_, _, %s)", nicID, lladdr1, lladdr0, ProtocolNumber, err, tcpip.ErrWouldBlock)
-				}
-				if c == nil {
-					t.Errorf("expected channel from call to s.GetLinkAddress(%d, %s, %s, %d, nil)", nicID, lladdr1, lladdr0, ProtocolNumber)
-				}
-
 				// Invalid count should have increased.
 				if got := invalid.Value(); got != 1 {
 					t.Errorf("got invalid = %d, want = 1", got)
@@ -325,6 +342,7 @@ func TestNDPValidation(t *testing.T) {
 		size        int
 		extraData   []byte
 		statCounter func(tcpip.ICMPv6ReceivedPacketStats) *tcpip.StatCounter
+		routerOnly  bool
 	}{
 		{
 			name: "RouterSolicit",
@@ -333,6 +351,7 @@ func TestNDPValidation(t *testing.T) {
 			statCounter: func(stats tcpip.ICMPv6ReceivedPacketStats) *tcpip.StatCounter {
 				return stats.RouterSolicit
 			},
+			routerOnly: true,
 		},
 		{
 			name: "RouterAdvert",
@@ -407,57 +426,68 @@ func TestNDPValidation(t *testing.T) {
 	}
 
 	for _, typ := range types {
-		t.Run(typ.name, func(t *testing.T) {
-			for _, test := range subTests {
-				t.Run(test.name, func(t *testing.T) {
-					s, ep, r := setup(t)
-					defer r.Release()
-
-					stats := s.Stats().ICMP.V6PacketsReceived
-					invalid := stats.Invalid
-					typStat := typ.statCounter(stats)
-
-					extraDataLen := len(typ.extraData)
-					hdr := buffer.NewPrependable(header.IPv6MinimumSize + typ.size + extraDataLen + header.IPv6FragmentExtHdrLength)
-					extraData := buffer.View(hdr.Prepend(extraDataLen))
-					copy(extraData, typ.extraData)
-					pkt := header.ICMPv6(hdr.Prepend(typ.size))
-					pkt.SetType(typ.typ)
-					pkt.SetCode(test.code)
-					pkt.SetChecksum(header.ICMPv6Checksum(pkt, r.LocalAddress, r.RemoteAddress, extraData.ToVectorisedView()))
-
-					// Rx count of the NDP message should initially be 0.
-					if got := typStat.Value(); got != 0 {
-						t.Errorf("got %s = %d, want = 0", typ.name, got)
-					}
-
-					// Invalid count should initially be 0.
-					if got := invalid.Value(); got != 0 {
-						t.Errorf("got invalid = %d, want = 0", got)
-					}
-
-					if t.Failed() {
-						t.FailNow()
-					}
-
-					handleIPv6Payload(hdr, test.hopLimit, test.atomicFragment, ep, &r)
-
-					// Rx count of the NDP packet should have increased.
-					if got := typStat.Value(); got != 1 {
-						t.Errorf("got %s = %d, want = 1", typ.name, got)
-					}
-
-					want := uint64(0)
-					if !test.valid {
-						// Invalid count should have increased.
-						want = 1
-					}
-					if got := invalid.Value(); got != want {
-						t.Errorf("got invalid = %d, want = %d", got, want)
-					}
-				})
+		for _, isRouter := range []bool{false, true} {
+			name := typ.name
+			if isRouter {
+				name += " (Router)"
 			}
-		})
+			t.Run(name, func(t *testing.T) {
+				for _, test := range subTests {
+					t.Run(test.name, func(t *testing.T) {
+						s, ep, r := setup(t)
+						defer r.Release()
+
+						if isRouter {
+							// Enabling forwarding makes the stack act as a router.
+							s.SetForwarding(true)
+						}
+
+						stats := s.Stats().ICMP.V6PacketsReceived
+						invalid := stats.Invalid
+						typStat := typ.statCounter(stats)
+
+						extraDataLen := len(typ.extraData)
+						hdr := buffer.NewPrependable(header.IPv6MinimumSize + typ.size + extraDataLen + header.IPv6FragmentExtHdrLength)
+						extraData := buffer.View(hdr.Prepend(extraDataLen))
+						copy(extraData, typ.extraData)
+						pkt := header.ICMPv6(hdr.Prepend(typ.size))
+						pkt.SetType(typ.typ)
+						pkt.SetCode(test.code)
+						pkt.SetChecksum(header.ICMPv6Checksum(pkt, r.LocalAddress, r.RemoteAddress, extraData.ToVectorisedView()))
+
+						// Rx count of the NDP message should initially be 0.
+						if got := typStat.Value(); got != 0 {
+							t.Errorf("got %s = %d, want = 0", typ.name, got)
+						}
+
+						// Invalid count should initially be 0.
+						if got := invalid.Value(); got != 0 {
+							t.Errorf("got invalid = %d, want = 0", got)
+						}
+
+						if t.Failed() {
+							t.FailNow()
+						}
+
+						handleIPv6Payload(hdr, test.hopLimit, test.atomicFragment, ep, &r)
+
+						// Rx count of the NDP packet should have increased.
+						if got := typStat.Value(); got != 1 {
+							t.Errorf("got %s = %d, want = 1", typ.name, got)
+						}
+
+						want := uint64(0)
+						if !test.valid || !isRouter && typ.routerOnly {
+							// Invalid count should have increased.
+							want = 1
+						}
+						if got := invalid.Value(); got != want {
+							t.Errorf("got invalid = %d, want = %d", got, want)
+						}
+					})
+				}
+			})
+		}
 	}
 }
 
