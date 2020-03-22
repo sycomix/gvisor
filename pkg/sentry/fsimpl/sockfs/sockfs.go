@@ -16,6 +16,7 @@
 package sockfs
 
 import (
+	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/kernfs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
@@ -70,4 +71,30 @@ type inode struct {
 // Open implements kernfs.Inode.Open.
 func (i *inode) Open(rp *vfs.ResolvingPath, vfsd *vfs.Dentry, opts vfs.OpenOptions) (*vfs.FileDescription, error) {
 	return nil, syserror.ENXIO
+}
+
+// InitSocket initializes a socket FileDescription, with a corresponding
+// Dentry in mnt.
+//
+// fd should be the FileDescription associated with socketImpl, i.e. its first
+// field. mnt should be the global socket mount, Kernel.socketMount.
+func InitSocket(socketImpl vfs.FileDescriptionImpl, fd *vfs.FileDescription, mnt *vfs.Mount, creds *auth.Credentials) error {
+	fsimpl := mnt.Filesystem().Impl()
+	fs, ok := fsimpl.(*kernfs.Filesystem)
+	if !ok {
+		panic("sockfs.InitSocket() can only be used with a mount backed by sockfs")
+	}
+	// File mode matches net/socket.c:sock_alloc.
+	filemode := linux.FileMode(linux.S_IFSOCK | 0600)
+	i := &inode{}
+	i.Init(creds, fs.NextIno(), filemode)
+
+	d := &kernfs.Dentry{}
+	d.Init(i)
+
+	opts := &vfs.FileDescriptionOptions{UseDentryMetadata: true}
+	if err := fd.Init(socketImpl, linux.O_RDWR, mnt, d.VFSDentry(), opts); err != nil {
+		return err
+	}
+	return nil
 }
