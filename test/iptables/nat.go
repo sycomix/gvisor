@@ -26,8 +26,10 @@ const (
 )
 
 func init() {
-	RegisterTestCase(NATRedirectUDPPort{})
-	RegisterTestCase(NATRedirectTCPPort{})
+	RegisterTestCase(NATPreRedirectUDPPort{})
+	RegisterTestCase(NATPreRedirectTCPPort{})
+	RegisterTestCase(NATOutRedirectUDPPort{})
+	RegisterTestCase(NATOutRedirectTCPPort{})
 	RegisterTestCase(NATDropUDP{})
 	RegisterTestCase(NATAcceptAll{})
 	RegisterTestCase(NATPreRedirectIP{})
@@ -39,16 +41,16 @@ func init() {
 	RegisterTestCase(NATRedirectRequiresProtocol{})
 }
 
-// NATRedirectUDPPort tests that packets are redirected to different port.
-type NATRedirectUDPPort struct{}
+// NATPreRedirectUDPPort tests that packets are redirected to different port.
+type NATPreRedirectUDPPort struct{}
 
 // Name implements TestCase.Name.
-func (NATRedirectUDPPort) Name() string {
-	return "NATRedirectUDPPort"
+func (NATPreRedirectUDPPort) Name() string {
+	return "NATPreRedirectUDPPort"
 }
 
 // ContainerAction implements TestCase.ContainerAction.
-func (NATRedirectUDPPort) ContainerAction(ip net.IP) error {
+func (NATPreRedirectUDPPort) ContainerAction(ip net.IP) error {
 	if err := natTable("-A", "PREROUTING", "-p", "udp", "-j", "REDIRECT", "--to-ports", fmt.Sprintf("%d", redirectPort)); err != nil {
 		return err
 	}
@@ -61,20 +63,20 @@ func (NATRedirectUDPPort) ContainerAction(ip net.IP) error {
 }
 
 // LocalAction implements TestCase.LocalAction.
-func (NATRedirectUDPPort) LocalAction(ip net.IP) error {
+func (NATPreRedirectUDPPort) LocalAction(ip net.IP) error {
 	return sendUDPLoop(ip, acceptPort, sendloopDuration)
 }
 
-// NATRedirectTCPPort tests that connections are redirected on specified ports.
-type NATRedirectTCPPort struct{}
+// NATPreRedirectTCPPort tests that connections are redirected on specified ports.
+type NATPreRedirectTCPPort struct{}
 
 // Name implements TestCase.Name.
-func (NATRedirectTCPPort) Name() string {
-	return "NATRedirectTCPPort"
+func (NATPreRedirectTCPPort) Name() string {
+	return "NATPreRedirectTCPPort"
 }
 
 // ContainerAction implements TestCase.ContainerAction.
-func (NATRedirectTCPPort) ContainerAction(ip net.IP) error {
+func (NATPreRedirectTCPPort) ContainerAction(ip net.IP) error {
 	if err := natTable("-A", "PREROUTING", "-p", "tcp", "-m", "tcp", "--dport", fmt.Sprintf("%d", dropPort), "-j", "REDIRECT", "--to-ports", fmt.Sprintf("%d", redirectPort)); err != nil {
 		return err
 	}
@@ -84,8 +86,57 @@ func (NATRedirectTCPPort) ContainerAction(ip net.IP) error {
 }
 
 // LocalAction implements TestCase.LocalAction.
-func (NATRedirectTCPPort) LocalAction(ip net.IP) error {
+func (NATPreRedirectTCPPort) LocalAction(ip net.IP) error {
 	return connectTCP(ip, dropPort, sendloopDuration)
+}
+
+// NATOutRedirectUDPPort tests that packets are redirected to different port.
+type NATOutRedirectUDPPort struct{}
+
+// Name implements TestCase.Name.
+func (NATOutRedirectUDPPort) Name() string {
+	return "NATOutRedirectUDPPort"
+}
+
+// ContainerAction implements TestCase.ContainerAction.
+func (NATOutRedirectUDPPort) ContainerAction(ip net.IP) error {
+	if err := natTable("-A", "OUTPUT", "-p", "udp", "-j", "REDIRECT", "--to-ports", fmt.Sprintf("%d", acceptPort)); err != nil {
+		return err
+	}
+
+	return sendUDPLoop(ip, dropPort, sendloopDuration)
+}
+
+// LocalAction implements TestCase.LocalAction.
+func (NATOutRedirectUDPPort) LocalAction(ip net.IP) error {
+	if err := listenUDP(acceptPort, sendloopDuration); err != nil {
+		return fmt.Errorf("packets on port %d should be allowed, but encountered an error: %v", acceptPort, err)
+	}
+
+	return nil
+}
+
+// NATOutRedirectTCPPort tests that connections are redirected on specified ports.
+type NATOutRedirectTCPPort struct{}
+
+// Name implements TestCase.Name.
+func (NATOutRedirectTCPPort) Name() string {
+	return "NATOutRedirectTCPPort"
+}
+
+// ContainerAction implements TestCase.ContainerAction.
+func (NATOutRedirectTCPPort) ContainerAction(ip net.IP) error {
+	if err := natTable("-A", "OUTPUT", "-p", "tcp", "-m", "tcp", "--dport", fmt.Sprintf("%d", dropPort), "-j", "REDIRECT", "--to-ports", fmt.Sprintf("%d", acceptPort)); err != nil {
+		return err
+	}
+
+	return connectTCP(ip, dropPort, sendloopDuration)
+}
+
+// LocalAction implements TestCase.LocalAction.
+func (NATOutRedirectTCPPort) LocalAction(ip net.IP) error {
+	// Listen for TCP packets on redirect port.
+	return listenTCP(acceptPort, sendloopDuration)
 }
 
 // NATDropUDP tests that packets are not received in ports other than redirect

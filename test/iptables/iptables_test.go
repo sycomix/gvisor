@@ -190,18 +190,26 @@ func TestFilterInputDropOnlyUDP(t *testing.T) {
 	}
 }
 
-func TestNATRedirectUDPPort(t *testing.T) {
-	// TODO(gvisor.dev/issue/170): Enable when supported.
-	t.Skip("NAT isn't supported yet (gvisor.dev/issue/170).")
-	if err := singleTest(NATRedirectUDPPort{}); err != nil {
+func TestNATPreRedirectUDPPort(t *testing.T) {
+	if err := singleTest(NATPreRedirectUDPPort{}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestNATRedirectTCPPort(t *testing.T) {
-	// TODO(gvisor.dev/issue/170): Enable when supported.
-	t.Skip("NAT isn't supported yet (gvisor.dev/issue/170).")
-	if err := singleTest(NATRedirectTCPPort{}); err != nil {
+func TestNATPreRedirectTCPPort(t *testing.T) {
+	if err := singleTest(NATPreRedirectTCPPort{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNATOutRedirectUDPPort(t *testing.T) {
+	if err := singleTest(NATOutRedirectUDPPort{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNATOutRedirectTCPPort(t *testing.T) {
+	if err := singleTest(NATOutRedirectTCPPort{}); err != nil {
 		t.Fatal(err)
 	}
 }
