@@ -76,7 +76,8 @@ func NewVectorisedView(size int, views []View) VectorisedView {
 	return VectorisedView{views: views, size: size}
 }
 
-// TrimFront removes the first "count" bytes of the vectorised view.
+// TrimFront removes the first "count" bytes of the vectorised view. It panics
+// if count > vv.Size().
 func (vv *VectorisedView) TrimFront(count int) {
 	for count > 0 && len(vv.views) > 0 {
 		if count < len(vv.views[0]) {
@@ -85,7 +86,8 @@ func (vv *VectorisedView) TrimFront(count int) {
 			return
 		}
 		count -= len(vv.views[0])
-		vv.RemoveFirst()
+		vv.size -= len(vv.views[0])
+		vv.views = vv.views[1:]
 	}
 }
 
@@ -120,21 +122,36 @@ func (vv VectorisedView) Clone(buffer []View) VectorisedView {
 	return VectorisedView{views: append(buffer[:0], vv.views...), size: vv.size}
 }
 
-// First returns the first view of the vectorised view.
-func (vv VectorisedView) First() View {
+// PullUp returns the first "count" bytes of the vectorised view. If those
+// bytes aren't already contiguous inside the vectorised view, PullUp will
+// reallocate as needed to make them contiguous. PullUp fails and returns false
+// when count > vv.Size().
+func (vv *VectorisedView) PullUp(count int) (View, bool) {
 	if len(vv.views) == 0 {
-		return nil
+		return nil, count == 0
 	}
-	return vv.views[0]
-}
+	if count <= len(vv.views[0]) {
+		return vv.views[0][:count], true
+	}
+	if count > vv.size {
+		return nil, false
+	}
 
-// RemoveFirst removes the first view of the vectorised view.
-func (vv *VectorisedView) RemoveFirst() {
-	if len(vv.views) == 0 {
-		return
+	newFirst := NewView(count)
+	i := 0
+	for offset := 0; offset < count; i++ {
+		copy(newFirst[offset:], vv.views[i])
+		if count-offset < len(vv.views[i]) {
+			vv.views[i].TrimFront(count - offset)
+			break
+		}
+		offset += len(vv.views[i])
 	}
-	vv.size -= len(vv.views[0])
-	vv.views = vv.views[1:]
+	// We're guaranteed that i > 0, since count is too large for the first
+	// view.
+	vv.views[i-1] = newFirst
+	vv.views = vv.views[i-1:]
+	return newFirst, true
 }
 
 // Size returns the size in bytes of the entire content stored in the vectorised view.

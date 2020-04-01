@@ -68,7 +68,13 @@ func (*protocol) ParsePorts(v buffer.View) (src, dst uint16, err *tcpip.Error) {
 // that don't match any existing endpoint.
 func (p *protocol) HandleUnknownDestinationPacket(r *stack.Route, id stack.TransportEndpointID, pkt stack.PacketBuffer) bool {
 	// Get the header then trim it from the view.
-	hdr := header.UDP(pkt.Data.First())
+	h, ok := pkt.Data.PullUp(header.UDPMinimumSize)
+	if !ok {
+		// Malformed packet.
+		r.Stack().Stats().UDP.MalformedPacketsReceived.Increment()
+		return true
+	}
+	hdr := header.UDP(h)
 	if int(hdr.Length()) > pkt.Data.Size() {
 		// Malformed packet.
 		r.Stack().Stats().UDP.MalformedPacketsReceived.Increment()

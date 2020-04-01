@@ -258,12 +258,6 @@ func (it *IPTables) checkChain(hook Hook, pkt PacketBuffer, table Table, ruleIdx
 func (it *IPTables) checkRule(hook Hook, pkt PacketBuffer, table Table, ruleIdx int) (RuleVerdict, int) {
 	rule := table.Rules[ruleIdx]
 
-	// If pkt.NetworkHeader hasn't been set yet, it will be contained in
-	// pkt.Data.First().
-	if pkt.NetworkHeader == nil {
-		pkt.NetworkHeader = pkt.Data.First()
-	}
-
 	// Check whether the packet matches the IP header filter.
 	if !filterMatch(rule.Filter, header.IPv4(pkt.NetworkHeader)) {
 		// Continue on to the next rule.
