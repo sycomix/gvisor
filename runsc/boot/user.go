@@ -25,6 +25,7 @@ import (
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/sentry/fs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
+	"gvisor.dev/gvisor/pkg/sentry/vfs"
 	"gvisor.dev/gvisor/pkg/usermem"
 )
 
@@ -95,7 +96,7 @@ func getExecUserHome(ctx context.Context, rootMns *fs.MountNamespace, uid auth.K
 // maybeAddExecUserHome returns a new slice with the HOME enviroment variable
 // set if the slice does not already contain it, otherwise it returns the
 // original slice unmodified.
-func maybeAddExecUserHome(ctx context.Context, mns *fs.MountNamespace, uid auth.KUID, envv []string) ([]string, error) {
+func maybeAddExecUserHome(ctx context.Context, mns interface{}, uid auth.KUID, envv []string) ([]string, error) {
 	// Check if the envv already contains HOME.
 	for _, env := range envv {
 		if strings.HasPrefix(env, "HOME=") {
@@ -107,11 +108,19 @@ func maybeAddExecUserHome(ctx context.Context, mns *fs.MountNamespace, uid auth.
 	// Read /etc/passwd for the user's HOME directory and set the HOME
 	// environment variable as required by POSIX if it is not overridden by
 	// the user.
-	homeDir, err := getExecUserHome(ctx, mns, uid)
-	if err != nil {
-		return nil, fmt.Errorf("error reading exec user: %v", err)
+	if ns, ok := mns.(*fs.MountNamespace); ok {
+		homeDir, err := getExecUserHome(ctx, ns, uid)
+		if err != nil {
+			return nil, fmt.Errorf("error reading exec user: %v", err)
+		}
+		return append(envv, "HOME="+homeDir), nil
 	}
-	return append(envv, "HOME="+homeDir), nil
+	if _, ok := mns.(*vfs.MountNamespace); ok {
+		return append(envv, "HOME=/"), nil
+	}
+
+	return nil, fmt.Errorf("invalid type for mns argument: %+v", mns)
+
 }
 
 // findHomeInPasswd parses a passwd file and returns the given user's home

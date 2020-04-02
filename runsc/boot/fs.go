@@ -278,6 +278,9 @@ func subtargets(root string, mnts []specs.Mount) []string {
 }
 
 func setupContainerFS(ctx context.Context, conf *Config, mntr *containerMounter, procArgs *kernel.CreateProcessArgs) error {
+	if conf.VFS2 {
+		return vfs2SetupContainerFS(ctx, conf, mntr, procArgs)
+	}
 	mns, err := mntr.setupFS(conf, procArgs)
 	if err != nil {
 		return err
@@ -573,6 +576,9 @@ func newContainerMounter(spec *specs.Spec, goferFDs []int, k *kernel.Kernel, hin
 // should be mounted (e.g. a volume shared between containers). It must be
 // called for the root container only.
 func (c *containerMounter) processHints(conf *Config) error {
+	if conf.VFS2 {
+		return c.vfs2ProcessHints(conf)
+	}
 	ctx := c.k.SupervisorContext()
 	for _, hint := range c.hints.mounts {
 		// TODO(b/142076984): Only support tmpfs for now. Bind mounts require a

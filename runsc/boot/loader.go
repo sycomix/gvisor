@@ -26,7 +26,6 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
-	"gvisor.dev/gvisor/pkg/abi"
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/cpuid"
 	"gvisor.dev/gvisor/pkg/log"
@@ -72,6 +71,8 @@ import (
 	"gvisor.dev/gvisor/pkg/sentry/socket/netstack"
 	_ "gvisor.dev/gvisor/pkg/sentry/socket/unix"
 )
+
+var syscallTable *kernel.SyscallTable
 
 // Loader keeps state needed to start the kernel and run the container..
 type Loader struct {
@@ -188,11 +189,15 @@ func New(args Args) (*Loader, error) {
 		return nil, fmt.Errorf("setting up memory usage: %v", err)
 	}
 
-	if args.Conf.VFS2 {
-		st, ok := kernel.LookupSyscallTable(abi.Linux, arch.Host)
-		if ok {
-			vfs2.Override(st.Table)
-		}
+	// Patch the syscall table.
+	kernel.VFS2Enabled = args.Conf.VFS2
+	if kernel.VFS2Enabled {
+		log.Infof("*** VFS2 is enabled ***")
+		vfs2.Override(syscallTable.Table)
+	}
+
+	if _, ok := kernel.LookupSyscallTable(syscallTable.OS, syscallTable.Arch); !ok {
+		kernel.RegisterSyscallTable(syscallTable)
 	}
 
 	// Create kernel and platform.
@@ -515,8 +520,15 @@ func (l *Loader) run() error {
 			return err
 		}
 
+		var mns interface{}
+		if l.conf.VFS2 {
+			mns = l.rootProcArgs.MountNamespaceVFS2
+		} else {
+			mns = l.rootProcArgs.MountNamespace
+		}
+
 		// Add the HOME enviroment variable if it is not already set.
-		envv, err := maybeAddExecUserHome(ctx, l.rootProcArgs.MountNamespace, l.rootProcArgs.Credentials.RealKUID, l.rootProcArgs.Envv)
+		envv, err := maybeAddExecUserHome(ctx, mns, l.rootProcArgs.Credentials.RealKUID, l.rootProcArgs.Envv)
 		if err != nil {
 			return err
 		}

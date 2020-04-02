@@ -330,6 +330,12 @@ func RegisterSyscallTable(s *SyscallTable) {
 	allSyscallTables = append(allSyscallTables, s)
 }
 
+// TestOnlyFlushSyscallTables flushes the syscall tables for tests. Used for
+// parameterized VFSv2 tests.
+func TestOnlyFlushSyscallTables() {
+	allSyscallTables = []*SyscallTable{}
+}
+
 // Lookup returns the syscall implementation, if one exists.
 func (s *SyscallTable) Lookup(sysno uintptr) SyscallFn {
 	if sysno < uintptr(len(s.lookup)) {

@@ -29,6 +29,7 @@ import (
 	"gvisor.dev/gvisor/pkg/p9"
 	"gvisor.dev/gvisor/pkg/sentry/contexttest"
 	"gvisor.dev/gvisor/pkg/sentry/fs"
+	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/unet"
 	"gvisor.dev/gvisor/runsc/fsgofer"
@@ -100,13 +101,15 @@ func startGofer(root string) (int, func(), error) {
 	return sandboxEnd, cleanup, nil
 }
 
-func createLoader() (*Loader, func(), error) {
+func createLoader(vfsEnabled bool) (*Loader, func(), error) {
 	fd, err := server.CreateSocket(ControlSocketAddr(fmt.Sprintf("%010d", rand.Int())[:10]))
 	if err != nil {
 		return nil, nil, err
 	}
 	conf := testConfig()
 	spec := testSpec()
+
+	conf.VFS2 = vfsEnabled
 
 	sandEnd, cleanup, err := startGofer(spec.Root.Path)
 	if err != nil {
@@ -132,12 +135,20 @@ func createLoader() (*Loader, func(), error) {
 
 // TestRun runs a simple application in a sandbox and checks that it succeeds.
 func TestRun(t *testing.T) {
-	l, cleanup, err := createLoader()
+	t.Log("Running with VFSv1")
+	doRun(t, false)
+	t.Log("Running with VFSv2")
+	doRun(t, true)
+}
+
+func doRun(t *testing.T, vfsEnabled bool) {
+	l, cleanup, err := createLoader(vfsEnabled)
 	if err != nil {
 		t.Fatalf("error creating loader: %v", err)
 	}
 	defer l.Destroy()
 	defer cleanup()
+	defer kernel.TestOnlyFlushSyscallTables()
 
 	// Start a goroutine to read the start chan result, otherwise Run will
 	// block forever.
@@ -169,12 +180,21 @@ func TestRun(t *testing.T) {
 // TestStartSignal tests that the controller Start message will cause
 // WaitForStartSignal to return.
 func TestStartSignal(t *testing.T) {
-	l, cleanup, err := createLoader()
+	t.Log("Running with VFSv1")
+	doStartSignal(t, false)
+	t.Log("Running with VFSv2")
+	doStartSignal(t, true)
+
+}
+
+func doStartSignal(t *testing.T, vfsEnabled bool) {
+	l, cleanup, err := createLoader(vfsEnabled)
 	if err != nil {
 		t.Fatalf("error creating loader: %v", err)
 	}
 	defer l.Destroy()
 	defer cleanup()
+	defer kernel.TestOnlyFlushSyscallTables()
 
 	// We aren't going to wait on this application, so the control server
 	// needs to be shut down manually.
