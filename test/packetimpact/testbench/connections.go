@@ -221,6 +221,12 @@ func (conn *TCPIPv4) Recv(timeout time.Duration) *TCP {
 	return nil
 }
 
+// Drain the sniffer's receive buffer by receiving packets until there's nothing
+// else to receive.
+func (conn *TCPIPv4) Drain() {
+	conn.sniffer.Drain()
+}
+
 // Expect a packet that matches the provided tcp within the timeout specified.
 // If it doesn't arrive in time, the test fails.
 func (conn *TCPIPv4) Expect(tcp TCP, timeout time.Duration) *TCP {
@@ -385,6 +391,12 @@ func (conn *UDPIPv4) Recv(timeout time.Duration) *UDP {
 		return (layers[udpLayerIndex]).(*UDP)
 	}
 	return nil
+}
+
+// Drain the sniffer's receive buffer by receiving packets until there's nothing
+// else to receive.
+func (conn *UDPIPv4) Drain() {
+	conn.sniffer.Drain()
 }
 
 // Expect a packet that matches the provided udp within the timeout specified.
