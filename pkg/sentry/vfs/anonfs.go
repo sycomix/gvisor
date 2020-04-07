@@ -245,7 +245,7 @@ func (fs *anonFilesystem) BoundEndpointAt(ctx context.Context, rp *ResolvingPath
 }
 
 // ListxattrAt implements FilesystemImpl.ListxattrAt.
-func (fs *anonFilesystem) ListxattrAt(ctx context.Context, rp *ResolvingPath) ([]string, error) {
+func (fs *anonFilesystem) ListxattrAt(ctx context.Context, rp *ResolvingPath, size uint64) ([]string, error) {
 	if !rp.Done() {
 		return nil, syserror.ENOTDIR
 	}
@@ -253,7 +253,7 @@ func (fs *anonFilesystem) ListxattrAt(ctx context.Context, rp *ResolvingPath) ([
 }
 
 // GetxattrAt implements FilesystemImpl.GetxattrAt.
-func (fs *anonFilesystem) GetxattrAt(ctx context.Context, rp *ResolvingPath, name string) (string, error) {
+func (fs *anonFilesystem) GetxattrAt(ctx context.Context, rp *ResolvingPath, opts *GetxattrOptions) (string, error) {
 	if !rp.Done() {
 		return "", syserror.ENOTDIR
 	}
@@ -261,7 +261,7 @@ func (fs *anonFilesystem) GetxattrAt(ctx context.Context, rp *ResolvingPath, nam
 }
 
 // SetxattrAt implements FilesystemImpl.SetxattrAt.
-func (fs *anonFilesystem) SetxattrAt(ctx context.Context, rp *ResolvingPath, opts SetxattrOptions) error {
+func (fs *anonFilesystem) SetxattrAt(ctx context.Context, rp *ResolvingPath, opts *SetxattrOptions) error {
 	if !rp.Done() {
 		return syserror.ENOTDIR
 	}

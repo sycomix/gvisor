@@ -1075,7 +1075,7 @@ func (fs *filesystem) BoundEndpointAt(ctx context.Context, rp *vfs.ResolvingPath
 }
 
 // ListxattrAt implements vfs.FilesystemImpl.ListxattrAt.
-func (fs *filesystem) ListxattrAt(ctx context.Context, rp *vfs.ResolvingPath) ([]string, error) {
+func (fs *filesystem) ListxattrAt(ctx context.Context, rp *vfs.ResolvingPath, size uint64) ([]string, error) {
 	var ds *[]*dentry
 	fs.renameMu.RLock()
 	defer fs.renameMuRUnlockAndCheckCaching(&ds)
@@ -1083,11 +1083,11 @@ func (fs *filesystem) ListxattrAt(ctx context.Context, rp *vfs.ResolvingPath) ([
 	if err != nil {
 		return nil, err
 	}
-	return d.listxattr(ctx)
+	return d.listxattr(ctx, rp.Credentials(), size)
 }
 
 // GetxattrAt implements vfs.FilesystemImpl.GetxattrAt.
-func (fs *filesystem) GetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, name string) (string, error) {
+func (fs *filesystem) GetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, opts *vfs.GetxattrOptions) (string, error) {
 	var ds *[]*dentry
 	fs.renameMu.RLock()
 	defer fs.renameMuRUnlockAndCheckCaching(&ds)
@@ -1095,11 +1095,11 @@ func (fs *filesystem) GetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, nam
 	if err != nil {
 		return "", err
 	}
-	return d.getxattr(ctx, name)
+	return d.getxattr(ctx, rp.Credentials(), opts)
 }
 
 // SetxattrAt implements vfs.FilesystemImpl.SetxattrAt.
-func (fs *filesystem) SetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, opts vfs.SetxattrOptions) error {
+func (fs *filesystem) SetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, opts *vfs.SetxattrOptions) error {
 	var ds *[]*dentry
 	fs.renameMu.RLock()
 	defer fs.renameMuRUnlockAndCheckCaching(&ds)
@@ -1107,7 +1107,7 @@ func (fs *filesystem) SetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, opt
 	if err != nil {
 		return err
 	}
-	return d.setxattr(ctx, &opts)
+	return d.setxattr(ctx, rp.Credentials(), opts)
 }
 
 // RemovexattrAt implements vfs.FilesystemImpl.RemovexattrAt.
@@ -1119,7 +1119,7 @@ func (fs *filesystem) RemovexattrAt(ctx context.Context, rp *vfs.ResolvingPath, 
 	if err != nil {
 		return err
 	}
-	return d.removexattr(ctx, name)
+	return d.removexattr(ctx, rp.Credentials(), name)
 }
 
 // PrependPath implements vfs.FilesystemImpl.PrependPath.

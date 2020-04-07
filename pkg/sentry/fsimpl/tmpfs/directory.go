@@ -15,10 +15,13 @@
 package tmpfs
 
 import (
+	"strings"
+
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/xattr"
 	"gvisor.dev/gvisor/pkg/syserror"
 )
 
@@ -30,6 +33,44 @@ type directory struct {
 	// directoryFDs. childList is used to support directoryFD.IterDirents()
 	// efficiently. childList is protected by filesystem.mu.
 	childList dentryList
+
+	// xattrs implements extended attributes.
+	xattrs xattr.SimpleExtendedAttributes
+}
+
+// TODO(b/148380782): support xattr namespaces other than "user".
+func (d *directory) listxattr(size uint64) ([]string, error) {
+	return d.xattrs.Listxattr(size)
+}
+
+func (d *directory) getxattr(creds *auth.Credentials, opts *vfs.GetxattrOptions) (string, error) {
+	if err := d.inode.checkPermissions(creds, vfs.MayRead); err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(opts.Name, linux.XATTR_USER_PREFIX) {
+		return "", syserror.EOPNOTSUPP
+	}
+	return d.xattrs.Getxattr(opts)
+}
+
+func (d *directory) setxattr(creds *auth.Credentials, opts *vfs.SetxattrOptions) error {
+	if err := d.inode.checkPermissions(creds, vfs.MayWrite); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(opts.Name, linux.XATTR_USER_PREFIX) {
+		return syserror.EOPNOTSUPP
+	}
+	return d.xattrs.Setxattr(opts)
+}
+
+func (d *directory) removexattr(creds *auth.Credentials, name string) error {
+	if err := d.inode.checkPermissions(creds, vfs.MayWrite); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(name, linux.XATTR_USER_PREFIX) {
+		return syserror.EOPNOTSUPP
+	}
+	return d.xattrs.Removexattr(name)
 }
 
 func (fs *filesystem) newDirectory(creds *auth.Credentials, mode linux.FileMode) *inode {
@@ -181,4 +222,28 @@ func (fd *directoryFD) Seek(ctx context.Context, offset int64, whence int32) (in
 	}
 	dir.childList.PushBack(fd.iter)
 	return offset, nil
+}
+
+// Listxattr implements vfs.FileDescriptionImpl.Listxattr.
+func (fd *directoryFD) Listxattr(ctx context.Context, size uint64) ([]string, error) {
+	file := fd.inode().impl.(*directory)
+	return file.listxattr(size)
+}
+
+// Getxattr implements vfs.FileDescriptionImpl.Getxattr.
+func (fd *directoryFD) Getxattr(ctx context.Context, opts *vfs.GetxattrOptions) (string, error) {
+	file := fd.inode().impl.(*directory)
+	return file.getxattr(auth.CredentialsFromContext(ctx), opts)
+}
+
+// Setxattr implements vfs.FileDescriptionImpl.Setxattr.
+func (fd *directoryFD) Setxattr(ctx context.Context, opts *vfs.SetxattrOptions) error {
+	file := fd.inode().impl.(*directory)
+	return file.setxattr(auth.CredentialsFromContext(ctx), opts)
+}
+
+// Removexattr implements vfs.FileDescriptionImpl.Removexattr.
+func (fd *directoryFD) Removexattr(ctx context.Context, name string) error {
+	file := fd.inode().impl.(*directory)
+	return file.removexattr(auth.CredentialsFromContext(ctx), name)
 }

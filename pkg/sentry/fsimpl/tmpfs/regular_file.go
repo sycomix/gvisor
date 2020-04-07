@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
@@ -31,6 +32,7 @@ import (
 	"gvisor.dev/gvisor/pkg/sentry/pgalloc"
 	"gvisor.dev/gvisor/pkg/sentry/usage"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/vfs/xattr"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/usermem"
@@ -61,6 +63,9 @@ type regularFile struct {
 	//
 	// Protected by mapsMu.
 	writableMappingPages uint64
+
+	// xattrs implements extended attributes.
+	xattrs xattr.SimpleExtendedAttributes
 
 	// dataMu protects the fields below.
 	dataMu sync.RWMutex
@@ -260,6 +265,41 @@ func (*regularFile) InvalidateUnsavable(context.Context) error {
 	return nil
 }
 
+// TODO(b/148380782): support xattr namespaces other than "user".
+func (rf *regularFile) listxattr(size uint64) ([]string, error) {
+	return rf.xattrs.Listxattr(size)
+}
+
+func (rf *regularFile) getxattr(creds *auth.Credentials, opts *vfs.GetxattrOptions) (string, error) {
+	if err := rf.inode.checkPermissions(creds, vfs.MayRead); err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(opts.Name, linux.XATTR_USER_PREFIX) {
+		return "", syserror.EOPNOTSUPP
+	}
+	return rf.xattrs.Getxattr(opts)
+}
+
+func (rf *regularFile) setxattr(creds *auth.Credentials, opts *vfs.SetxattrOptions) error {
+	if err := rf.inode.checkPermissions(creds, vfs.MayWrite); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(opts.Name, linux.XATTR_USER_PREFIX) {
+		return syserror.EOPNOTSUPP
+	}
+	return rf.xattrs.Setxattr(opts)
+}
+
+func (rf *regularFile) removexattr(creds *auth.Credentials, name string) error {
+	if err := rf.inode.checkPermissions(creds, vfs.MayWrite); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(name, linux.XATTR_USER_PREFIX) {
+		return syserror.EOPNOTSUPP
+	}
+	return rf.xattrs.Removexattr(name)
+}
+
 type regularFileFD struct {
 	fileDescription
 
@@ -391,6 +431,30 @@ func (fd *regularFileFD) UnlockPOSIX(ctx context.Context, uid lock.UniqueID, rng
 func (fd *regularFileFD) ConfigureMMap(ctx context.Context, opts *memmap.MMapOpts) error {
 	file := fd.inode().impl.(*regularFile)
 	return vfs.GenericConfigureMMap(&fd.vfsfd, file, opts)
+}
+
+// Listxattr implements vfs.FileDescriptionImpl.Listxattr.
+func (fd *regularFileFD) Listxattr(ctx context.Context, size uint64) ([]string, error) {
+	file := fd.inode().impl.(*regularFile)
+	return file.listxattr(size)
+}
+
+// Getxattr implements vfs.FileDescriptionImpl.Getxattr.
+func (fd *regularFileFD) Getxattr(ctx context.Context, opts *vfs.GetxattrOptions) (string, error) {
+	file := fd.inode().impl.(*regularFile)
+	return file.getxattr(auth.CredentialsFromContext(ctx), opts)
+}
+
+// Setxattr implements vfs.FileDescriptionImpl.Setxattr.
+func (fd *regularFileFD) Setxattr(ctx context.Context, opts *vfs.SetxattrOptions) error {
+	file := fd.inode().impl.(*regularFile)
+	return file.setxattr(auth.CredentialsFromContext(ctx), opts)
+}
+
+// Removexattr implements vfs.FileDescriptionImpl.Removexattr.
+func (fd *regularFileFD) Removexattr(ctx context.Context, name string) error {
+	file := fd.inode().impl.(*regularFile)
+	return file.removexattr(auth.CredentialsFromContext(ctx), name)
 }
 
 // regularFileReadWriter implements safemem.Reader and Safemem.Writer.

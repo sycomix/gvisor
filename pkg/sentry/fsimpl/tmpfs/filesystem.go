@@ -696,51 +696,85 @@ func (fs *filesystem) BoundEndpointAt(ctx context.Context, rp *vfs.ResolvingPath
 }
 
 // ListxattrAt implements vfs.FilesystemImpl.ListxattrAt.
-func (fs *filesystem) ListxattrAt(ctx context.Context, rp *vfs.ResolvingPath) ([]string, error) {
+func (fs *filesystem) ListxattrAt(ctx context.Context, rp *vfs.ResolvingPath, size uint64) ([]string, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	_, err := resolveLocked(rp)
+	d, err := resolveLocked(rp)
 	if err != nil {
 		return nil, err
 	}
-	// TODO(b/127675828): support extended attributes
-	return nil, syserror.ENOTSUP
+	impl := d.inode.impl
+	switch impl.(type) {
+	case *regularFile:
+		return impl.(*regularFile).listxattr(size)
+	case *directory:
+		return impl.(*directory).listxattr(size)
+	default:
+		// TODO(b/148380782): In Linux, some xattrs are not restricted to regular
+		// files and directories. Once we implement support namespaces other than
+		// user.*, we may need to add support for other file types.
+		return nil, nil
+	}
 }
 
 // GetxattrAt implements vfs.FilesystemImpl.GetxattrAt.
-func (fs *filesystem) GetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, name string) (string, error) {
+func (fs *filesystem) GetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, opts *vfs.GetxattrOptions) (string, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	_, err := resolveLocked(rp)
+	d, err := resolveLocked(rp)
 	if err != nil {
 		return "", err
 	}
-	// TODO(b/127675828): support extended attributes
-	return "", syserror.ENOTSUP
+
+	impl := d.inode.impl
+	switch impl.(type) {
+	case *regularFile:
+		return impl.(*regularFile).getxattr(rp.Credentials(), opts)
+	case *directory:
+		return impl.(*directory).getxattr(rp.Credentials(), opts)
+	default:
+		return "", syserror.ENODATA
+	}
 }
 
 // SetxattrAt implements vfs.FilesystemImpl.SetxattrAt.
-func (fs *filesystem) SetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, opts vfs.SetxattrOptions) error {
+func (fs *filesystem) SetxattrAt(ctx context.Context, rp *vfs.ResolvingPath, opts *vfs.SetxattrOptions) error {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	_, err := resolveLocked(rp)
+	d, err := resolveLocked(rp)
 	if err != nil {
 		return err
 	}
-	// TODO(b/127675828): support extended attributes
-	return syserror.ENOTSUP
+
+	impl := d.inode.impl
+	switch impl.(type) {
+	case *regularFile:
+		return impl.(*regularFile).setxattr(rp.Credentials(), opts)
+	case *directory:
+		return impl.(*directory).setxattr(rp.Credentials(), opts)
+	default:
+		return syserror.EPERM
+	}
 }
 
 // RemovexattrAt implements vfs.FilesystemImpl.RemovexattrAt.
 func (fs *filesystem) RemovexattrAt(ctx context.Context, rp *vfs.ResolvingPath, name string) error {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	_, err := resolveLocked(rp)
+	d, err := resolveLocked(rp)
 	if err != nil {
 		return err
 	}
-	// TODO(b/127675828): support extended attributes
-	return syserror.ENOTSUP
+
+	impl := d.inode.impl
+	switch impl.(type) {
+	case *regularFile:
+		return impl.(*regularFile).removexattr(rp.Credentials(), name)
+	case *directory:
+		return impl.(*directory).removexattr(rp.Credentials(), name)
+	default:
+		return syserror.EPERM
+	}
 }
 
 // PrependPath implements vfs.FilesystemImpl.PrependPath.
