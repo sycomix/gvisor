@@ -235,8 +235,6 @@ func (conn *TCPIPv4) RecvFrame(timeout time.Duration) Layers {
 // Expect a packet that matches the provided tcp within the timeout specified.
 // If it doesn't arrive in time, it returns nil.
 func (conn *TCPIPv4) Expect(tcp TCP, timeout time.Duration) (*TCP, error) {
-	// We cannot implement this directly using ExpectFrame as we cannot specify
-	// the Payload part.
 	deadline := time.Now().Add(timeout)
 	var allTCP []string
 	for {
