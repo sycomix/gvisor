@@ -33,12 +33,14 @@ import (
 
 var localIPv4 = flag.String("local_ipv4", "", "local IPv4 address for test packets")
 var remoteIPv4 = flag.String("remote_ipv4", "", "remote IPv4 address for test packets")
+var localIPv6 = flag.String("local_ipv6", "", "local IPv6 address for test packets")
+var remoteIPv6 = flag.String("remote_ipv6", "", "remote IPv6 address for test packets")
 var localMAC = flag.String("local_mac", "", "local mac address for test packets")
 var remoteMAC = flag.String("remote_mac", "", "remote mac address for test packets")
 
-// pickPort makes a new socket and returns the socket FD and port. The caller
-// must close the FD when done with the port if there is no error.
-func pickPort() (int, uint16, error) {
+// pickPortIPv4 makes a new IPv4 socket and returns the socket FD and port. The
+// caller must close the FD when done with the port if there is no error.
+func pickPortIPv4() (int, uint16, error) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return -1, 0, err
@@ -62,6 +64,32 @@ func pickPort() (int, uint16, error) {
 	return fd, uint16(newSockAddrInet4.Port), nil
 }
 
+// pickPortIPv6 makes a new IPv6 socket and returns the socket FD and port. The
+// caller must close the FD when done with the port if there is no error.
+func pickPortIPv6() (int, uint16, error) {
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return -1, 0, err
+	}
+	var sa unix.SockaddrInet6
+	copy(sa.Addr[0:16], net.ParseIP(*localIPv6).To16())
+	if err := unix.Bind(fd, &sa); err != nil {
+		unix.Close(fd)
+		return -1, 0, err
+	}
+	newSockAddr, err := unix.Getsockname(fd)
+	if err != nil {
+		unix.Close(fd)
+		return -1, 0, err
+	}
+	newSockAddrInet6, ok := newSockAddr.(*unix.SockaddrInet6)
+	if !ok {
+		unix.Close(fd)
+		return -1, 0, fmt.Errorf("can't cast Getsockname result to SockaddrInet6")
+	}
+	return fd, uint16(newSockAddrInet6.Port), nil
+}
+
 // TCPIPv4 maintains state about a TCP/IPv4 connection.
 type TCPIPv4 struct {
 	outgoing     Layers
@@ -75,8 +103,8 @@ type TCPIPv4 struct {
 	t            *testing.T
 }
 
-// tcpLayerIndex is the position of the TCP layer in the TCPIPv4 connection. It
-// is the third, after Ethernet and IPv4.
+// tcpLayerIndex is the position of the TCP layer in the TCPIPv4/6 connection.
+// It is the third, after Ethernet and IPv4/6.
 const tcpLayerIndex int = 2
 
 // NewTCPIPv4 creates a new TCPIPv4 connection with reasonable defaults.
@@ -91,7 +119,7 @@ func NewTCPIPv4(t *testing.T, outgoingTCP, incomingTCP TCP) TCPIPv4 {
 		t.Fatalf("can't parse remoteMAC %q: %s", *remoteMAC, err)
 	}
 
-	portPickerFD, localPort, err := pickPort()
+	portPickerFD, localPort, err := pickPortIPv4()
 	if err != nil {
 		t.Fatalf("can't pick a port: %s", err)
 	}
@@ -293,6 +321,165 @@ func (conn *TCPIPv4) Handshake() {
 	conn.Send(TCP{Flags: Uint8(header.TCPFlagAck)})
 }
 
+// IPv6Conn maintains state about a IPv6 connection.
+type IPv6Conn struct {
+	outgoing Layers
+	incoming Layers
+	sniffer  Sniffer
+	injector Injector
+	t        *testing.T
+}
+
+const ipv6LayerIndex int = 1
+
+// NewIPv6Conn creates a new IPv6 connection with reasonable defaults.
+func NewIPv6Conn(t *testing.T, outgoingIPv6, incomingIPv6 IPv6) IPv6Conn {
+	lMAC, err := tcpip.ParseMACAddress(*localMAC)
+	if err != nil {
+		t.Fatalf("can't parse localMAC %q: %s", *localMAC, err)
+	}
+
+	rMAC, err := tcpip.ParseMACAddress(*remoteMAC)
+	if err != nil {
+		t.Fatalf("can't parse remoteMAC %q: %s", *remoteMAC, err)
+	}
+
+	if err != nil {
+		t.Fatalf("can't pick a port: %s", err)
+	}
+	lIP := tcpip.Address(net.ParseIP(*localIPv6).To16())
+	rIP := tcpip.Address(net.ParseIP(*remoteIPv6).To16())
+
+	sniffer, err := NewSniffer(t)
+	if err != nil {
+		t.Fatalf("can't make new sniffer: %s", err)
+	}
+
+	injector, err := NewInjector(t)
+	if err != nil {
+		t.Fatalf("can't make new injector: %s", err)
+	}
+
+	newOutgoingIPv6 := &IPv6{SrcAddr: &lIP, DstAddr: &rIP}
+	if err := newOutgoingIPv6.merge(outgoingIPv6); err != nil {
+		t.Fatalf("can't merge %+v into %+v: %s", outgoingIPv6, newOutgoingIPv6, err)
+	}
+	newIncomingIPv6 := &IPv6{SrcAddr: &rIP, DstAddr: &lIP}
+	if err := newIncomingIPv6.merge(incomingIPv6); err != nil {
+		t.Fatalf("can't merge %+v into %+v: %s", incomingIPv6, newIncomingIPv6, err)
+	}
+	return IPv6Conn{
+		outgoing: Layers{
+			&Ether{SrcAddr: &lMAC, DstAddr: &rMAC},
+			newOutgoingIPv6},
+		incoming: Layers{
+			&Ether{SrcAddr: &rMAC, DstAddr: &lMAC},
+			newIncomingIPv6},
+		sniffer:  sniffer,
+		injector: injector,
+		t:        t,
+	}
+}
+
+// Close the injector and sniffer associated with this connection.
+func (conn *IPv6Conn) Close() {
+	conn.sniffer.Close()
+	conn.injector.Close()
+}
+
+// CreateFrame builds a frame for the connection with ipv6 overriding defaults
+// and additionalLayers added after the IPv6 header.
+func (conn *IPv6Conn) CreateFrame(ipv6 IPv6, additionalLayers ...Layer) Layers {
+	layersToSend := deepcopy.Copy(conn.outgoing).(Layers)
+	if err := layersToSend[ipv6LayerIndex].(*IPv6).merge(ipv6); err != nil {
+		conn.t.Fatalf("can't merge %+v into %+v: %s", ipv6, layersToSend[ipv6LayerIndex], err)
+	}
+	layersToSend = append(layersToSend, additionalLayers...)
+	return layersToSend
+}
+
+// SendFrame sends a frame with reasonable defaults.
+func (conn *IPv6Conn) SendFrame(frame Layers) {
+	outBytes, err := frame.toBytes()
+	if err != nil {
+		conn.t.Fatalf("can't build outgoing IPv6 packet: %s", err)
+	}
+	conn.injector.Send(outBytes)
+}
+
+// Send a packet with reasonable defaults and override some fields by ipv6.
+func (conn *IPv6Conn) Send(ipv6 IPv6, additionalLayers ...Layer) {
+	conn.SendFrame(conn.CreateFrame(ipv6, additionalLayers...))
+}
+
+// Recv gets a packet from the sniffer within the timeout provided. If no packet
+// arrives before the timeout, it returns nil.
+func (conn *IPv6Conn) Recv(timeout time.Duration) *IPv6 {
+	layers := conn.RecvFrame(timeout)
+	if ipv6LayerIndex < len(layers) {
+		return layers[ipv6LayerIndex].(*IPv6)
+	}
+	return nil
+}
+
+// RecvFrame gets a frame (of type Layers) within the timeout provided. If no
+// frame arrives before the timeout, it returns nil.
+func (conn *IPv6Conn) RecvFrame(timeout time.Duration) Layers {
+	deadline := time.Now().Add(timeout)
+	for {
+		timeout = time.Until(deadline)
+		if timeout <= 0 {
+			break
+		}
+		b := conn.sniffer.Recv(timeout)
+		if b == nil {
+			break
+		}
+		layers, err := ParseEther(b)
+		if err != nil {
+			conn.t.Logf("can't parse frame: %s", err)
+			continue // Ignore packets that can't be parsed.
+		}
+		if !conn.incoming.match(layers) {
+			continue // Ignore packets that don't match the expected incoming.
+		}
+		return layers
+	}
+	return nil
+}
+
+// Expect a packet that matches the provided ipv6 within the timeout specified.
+// If it doesn't arrive in time, it returns nil.
+func (conn *IPv6Conn) Expect(ipv6 IPv6, timeout time.Duration) *IPv6 {
+	deadline := time.Now().Add(timeout)
+	for {
+		timeout = time.Until(deadline)
+		if timeout <= 0 {
+			return nil
+		}
+		gotIPv6 := conn.Recv(timeout)
+		if ipv6.match(gotIPv6) {
+			return gotIPv6
+		}
+	}
+}
+
+// ExpectFrame expects a frame that matches the specified layers within the
+// timeout specified. If it doesn't arrive in time, it returns nil.
+func (conn *IPv6Conn) ExpectFrame(layers Layers, timeout time.Duration) Layers {
+	deadline := time.Now().Add(timeout)
+	for {
+		timeout = time.Until(deadline)
+		if timeout <= 0 {
+			return nil
+		}
+		gotLayers := conn.RecvFrame(timeout)
+		if layers.match(gotLayers) {
+			return gotLayers
+		}
+	}
+}
+
 // UDPIPv4 maintains state about a UDP/IPv4 connection.
 type UDPIPv4 struct {
 	outgoing     Layers
@@ -319,7 +506,7 @@ func NewUDPIPv4(t *testing.T, outgoingUDP, incomingUDP UDP) UDPIPv4 {
 		t.Fatalf("can't parse remoteMAC %q: %s", *remoteMAC, err)
 	}
 
-	portPickerFD, localPort, err := pickPort()
+	portPickerFD, localPort, err := pickPortIPv4()
 	if err != nil {
 		t.Fatalf("can't pick a port: %s", err)
 	}

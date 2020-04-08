@@ -184,6 +184,7 @@ docker pull "${IMAGE_TAG}"
 
 # Create the DUT container and connect to network.
 DUT=$(docker create ${RUNTIME_ARG} --privileged --rm \
+  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
   --stop-timeout ${TIMEOUT} -it ${IMAGE_TAG})
 docker network connect "${CTRL_NET}" \
   --ip "${CTRL_NET_PREFIX}${DUT_NET_SUFFIX}" "${DUT}" \
@@ -195,6 +196,7 @@ docker start "${DUT}"
 
 # Create the test bench container and connect to network.
 TESTBENCH=$(docker create --privileged --rm \
+  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
   --stop-timeout ${TIMEOUT} -it ${IMAGE_TAG})
 docker network connect "${CTRL_NET}" \
   --ip "${CTRL_NET_PREFIX}${TESTBENCH_NET_SUFFIX}" "${TESTBENCH}" \
@@ -229,6 +231,10 @@ declare -r REMOTE_MAC=$(docker exec -t "${DUT}" ip link show \
   "${TEST_DEVICE}" | tail -1 | cut -d' ' -f6)
 declare -r LOCAL_MAC=$(docker exec -t "${TESTBENCH}" ip link show \
   "${TEST_DEVICE}" | tail -1 | cut -d' ' -f6)
+declare -r REMOTE_IPV6=$(docker exec -t "${DUT}" ip addr show \
+  "${TEST_DEVICE}" | grep inet6 | cut -d' ' -f6 | cut -d'/' -f1)
+declare -r LOCAL_IPV6=$(docker exec -t "${TESTBENCH}" ip addr show \
+  "${TEST_DEVICE}" | grep inet6 | cut -d' ' -f6 | cut -d'/' -f1)
 
 declare -r DOCKER_TESTBENCH_BINARY="/$(basename ${TESTBENCH_BINARY})"
 docker cp -L "${TESTBENCH_BINARY}" "${TESTBENCH}:${DOCKER_TESTBENCH_BINARY}"
@@ -237,15 +243,14 @@ if [[ -z "${TSHARK-}" ]]; then
   # Run tcpdump in the test bench unbuffered, without dns resolution, just on
   # the interface with the test packets.
   docker exec -t "${TESTBENCH}" \
-    tcpdump -S -vvv -U -n -i "${TEST_DEVICE}" net "${TEST_NET_PREFIX}/24" &
+    tcpdump -S -vvv -U -n -i "${TEST_DEVICE}" &
 else
   # Run tshark in the test bench unbuffered, without dns resolution, just on the
   # interface with the test packets.
   docker exec -t "${TESTBENCH}" \
     tshark -V -l -n -i "${TEST_DEVICE}" \
     -o tcp.check_checksum:TRUE \
-    -o udp.check_checksum:TRUE \
-    host "${TEST_NET_PREFIX}${TESTBENCH_NET_SUFFIX}" &
+    -o udp.check_checksum:TRUE &
 fi
 
 # tcpdump and tshark take time to startup
@@ -261,6 +266,8 @@ docker exec -t "${TESTBENCH}" \
   --posix_server_port=${CTRL_PORT} \
   --remote_ipv4=${TEST_NET_PREFIX}${DUT_NET_SUFFIX} \
   --local_ipv4=${TEST_NET_PREFIX}${TESTBENCH_NET_SUFFIX} \
+  --remote_ipv6=${REMOTE_IPV6} \
+  --local_ipv6=${LOCAL_IPV6} \
   --remote_mac=${REMOTE_MAC} \
   --local_mac=${LOCAL_MAC} \
   --device=${TEST_DEVICE}"

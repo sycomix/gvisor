@@ -151,6 +151,8 @@ func (l *Ether) toBytes() ([]byte, error) {
 		switch n := l.next().(type) {
 		case *IPv4:
 			fields.Type = header.IPv4ProtocolNumber
+		case *IPv6:
+			fields.Type = header.IPv6ProtocolNumber
 		default:
 			// TODO(b/150301488): Support more protocols, like IPv6.
 			return nil, fmt.Errorf("can't deduce the ethernet header's next protocol: %d", n)
@@ -185,6 +187,12 @@ func ParseEther(b []byte) (Layers, error) {
 	switch h.Type() {
 	case header.IPv4ProtocolNumber:
 		moreLayers, err := ParseIPv4(b[ether.length():])
+		if err != nil {
+			return nil, err
+		}
+		return append(layers, moreLayers...), nil
+	case header.IPv6ProtocolNumber:
+		moreLayers, err := ParseIPv6(b[ether.length():])
 		if err != nil {
 			return nil, err
 		}
@@ -344,7 +352,7 @@ func ParseIPv4(b []byte) (Layers, error) {
 		}
 		return append(layers, moreLayers...), nil
 	}
-	return nil, fmt.Errorf("can't deduce the ethernet header's next protocol: %d", h.Protocol())
+	return nil, fmt.Errorf("can't deduce the IPv4 header's next protocol: %v", h.TransportProtocol())
 }
 
 func (l *IPv4) match(other Layer) bool {
@@ -356,6 +364,194 @@ func (l *IPv4) length() int {
 		return header.IPv4MinimumSize
 	}
 	return int(*l.IHL)
+}
+
+// IPv6 can construct and match an IPv6 encapsulation.
+type IPv6 struct {
+	LayerBase
+	TrafficClass  *uint8
+	FlowLabel     *uint32
+	PayloadLength *uint16
+	NextHeader    *uint8
+	HopLimit      *uint8
+	SrcAddr       *tcpip.Address
+	DstAddr       *tcpip.Address
+}
+
+func (l *IPv6) String() string {
+	return stringLayer(l)
+}
+
+func (l *IPv6) toBytes() ([]byte, error) {
+	b := make([]byte, header.IPv6MinimumSize)
+	h := header.IPv6(b)
+	fields := &header.IPv6Fields{
+		TrafficClass:  0,
+		FlowLabel:     0,
+		PayloadLength: 0,
+		NextHeader:    0,
+		HopLimit:      64,
+		SrcAddr:       tcpip.Address(""),
+		DstAddr:       tcpip.Address(""),
+	}
+	if l.TrafficClass != nil {
+		fields.TrafficClass = *l.TrafficClass
+	}
+	if l.FlowLabel != nil {
+		fields.FlowLabel = *l.FlowLabel
+	}
+	if l.PayloadLength != nil {
+		fields.PayloadLength = *l.PayloadLength
+	} else {
+		for current := l.next(); current != nil; current = current.next() {
+			fields.PayloadLength += uint16(current.length())
+		}
+	}
+	if l.NextHeader != nil {
+		fields.NextHeader = *l.NextHeader
+	} else {
+		switch n := l.next().(type) {
+		case *TCP:
+			fields.NextHeader = uint8(header.TCPProtocolNumber)
+		case *UDP:
+			fields.NextHeader = uint8(header.UDPProtocolNumber)
+		case *ICMPv6:
+			fields.NextHeader = uint8(header.ICMPv6ProtocolNumber)
+		default:
+			// TODO(b/150301488): Support more protocols as needed.
+			return nil, fmt.Errorf("toBytes can't deduce the IPv6 header's next protocol: %#v", n)
+		}
+	}
+	if l.HopLimit != nil {
+		fields.HopLimit = *l.HopLimit
+	}
+	if l.SrcAddr != nil {
+		fields.SrcAddr = *l.SrcAddr
+	}
+	if l.DstAddr != nil {
+		fields.DstAddr = *l.DstAddr
+	}
+	h.Encode(fields)
+	return h, nil
+}
+
+// ParseIPv6 parses the bytes assuming that they start with an ipv6 header and
+// continues parsing further encapsulations.
+func ParseIPv6(b []byte) (Layers, error) {
+	h := header.IPv6(b)
+	tos, flowLabel := h.TOS()
+	ipv6 := IPv6{
+		TrafficClass:  &tos,
+		FlowLabel:     &flowLabel,
+		PayloadLength: Uint16(h.PayloadLength()),
+		NextHeader:    Uint8(h.NextHeader()),
+		HopLimit:      Uint8(h.HopLimit()),
+		SrcAddr:       Address(h.SourceAddress()),
+		DstAddr:       Address(h.DestinationAddress()),
+	}
+	layers := Layers{&ipv6}
+	switch h.TransportProtocol() {
+	case header.TCPProtocolNumber:
+		moreLayers, err := ParseTCP(b[ipv6.length():])
+		if err != nil {
+			return nil, err
+		}
+		return append(layers, moreLayers...), nil
+	case header.UDPProtocolNumber:
+		moreLayers, err := ParseUDP(b[ipv6.length():])
+		if err != nil {
+			return nil, err
+		}
+		return append(layers, moreLayers...), nil
+	case header.ICMPv6ProtocolNumber:
+		moreLayers, err := ParseICMPv6(b[ipv6.length():])
+		if err != nil {
+			return nil, err
+		}
+		return append(layers, moreLayers...), nil
+	}
+	return nil, fmt.Errorf("parser can't deduce the IPv6 header's next protocol: %v", h.TransportProtocol())
+}
+
+func (l *IPv6) match(other Layer) bool {
+	return equalLayer(l, other)
+}
+
+func (l *IPv6) length() int {
+	return header.IPv6MinimumSize
+}
+
+// merge overrides the values in l with the values from other but only in fields
+// where the value is not nil.
+func (l *IPv6) merge(other IPv6) error {
+	return mergo.Merge(l, other, mergo.WithOverride)
+}
+
+// ICMPv6 can construct and match an ICMPv6 encapsulation.
+type ICMPv6 struct {
+	LayerBase
+	Type       *header.ICMPv6Type
+	Code       *byte
+	Checksum   *uint16
+	NDPPayload []byte
+}
+
+func (l *ICMPv6) String() string {
+	// TODO(eyalsoha): Do something smarter here when *l.Type is ParameterProblem?
+	// We could parse the contents of the Payload as if it were an IPv6 packet.
+	return stringLayer(l)
+}
+
+func (l *ICMPv6) toBytes() ([]byte, error) {
+	b := make([]byte, header.ICMPv6HeaderSize+len(l.NDPPayload))
+	h := header.ICMPv6(b)
+	if l.Type != nil {
+		h.SetType(*l.Type)
+	}
+	if l.Code != nil {
+		h.SetCode(*l.Code)
+	}
+	if l.NDPPayload != nil {
+		copy(h.NDPPayload(), l.NDPPayload)
+	}
+	if l.Checksum != nil {
+		h.SetChecksum(*l.Checksum)
+		return h, nil
+	}
+	h.SetChecksum(header.ICMPv6Checksum(h, *l.prev().(*IPv6).SrcAddr, *l.prev().(*IPv6).DstAddr, buffer.VectorisedView{}))
+	return h, nil
+}
+
+// ICMPv6Type is a helper routine that allocates a new ICMPv6Type value to store
+// v and returns a pointer to it.
+func ICMPv6Type(v header.ICMPv6Type) *header.ICMPv6Type {
+	return &v
+}
+
+// Byte is a helper routine that allocates a new byte value to store
+// v and returns a pointer to it.
+func Byte(v byte) *byte {
+	return &v
+}
+
+// ParseICMPv6 parses the bytes assuming that they start with an ICMPv6 header.
+func ParseICMPv6(b []byte) (Layers, error) {
+	h := header.ICMPv6(b)
+	icmpv6 := ICMPv6{
+		Type:       ICMPv6Type(h.Type()),
+		Code:       Byte(h.Code()),
+		Checksum:   Uint16(h.Checksum()),
+		NDPPayload: h.NDPPayload(),
+	}
+	return Layers{&icmpv6}, nil
+}
+
+func (l *ICMPv6) match(other Layer) bool {
+	return equalLayer(l, other)
+}
+
+func (l *ICMPv6) length() int {
+	return header.ICMPv6HeaderSize + len(l.NDPPayload)
 }
 
 // TCP can construct and match a TCP encapsulation.
