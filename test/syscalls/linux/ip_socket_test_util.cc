@@ -35,7 +35,7 @@ uint16_t PortFromInetSockaddr(const struct sockaddr* addr) {
 }
 
 PosixErrorOr<int> InterfaceIndex(std::string name) {
-  // TODO(igudger): Consider using netlink.
+  // Use ioctl SIOCGIFINDEX for compatibilty.
   ifreq req = {};
   memcpy(req.ifr_name, name.c_str(), name.size());
   ASSIGN_OR_RETURN_ERRNO(auto sock, Socket(AF_INET, SOCK_DGRAM, 0));
