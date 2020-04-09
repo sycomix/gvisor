@@ -19,3 +19,4 @@ source $(dirname $0)/common.sh
 # TODO(b/112165693): "test --test_tag_filters=runsc_kvm" can be used
 # when the "manual" tag will be removed for kvm tests.
 test `bazel query "attr(tags, runsc_kvm, tests(//test/syscalls/...))"`
+#test --test_tag_filters=runsc_kvm //test/syscalls/...
