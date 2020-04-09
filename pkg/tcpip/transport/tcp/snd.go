@@ -27,10 +27,14 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/seqnum"
 )
 
-const (
-	// MinRTO is the minimum allowed value for the retransmit timeout.
-	MinRTO = 200 * time.Millisecond
+// MinRTO is the minimum allowed value for the retransmit timeout.
+//
+// MinRTO is a variable only because we want to be able to override it in
+// tests as in some cases the tests can flake out if the test executor is
+// overloaded and causes the retransmit timer to fire unexpectedly.
+var MinRTO = 200 * time.Millisecond
 
+const (
 	// MaxRTO is the maximum allowed value for the retransmit timeout.
 	MaxRTO = 120 * time.Second
 

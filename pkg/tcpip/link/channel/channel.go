@@ -53,10 +53,8 @@ type queue struct {
 	// mu protects fields below.
 	mu sync.RWMutex
 	// c is the outbound packet channel. Sending to c should hold mu.
-	c        chan PacketInfo
-	numWrite int
-	numRead  int
-	notify   []*NotificationHandle
+	c      chan PacketInfo
+	notify []*NotificationHandle
 }
 
 func (q *queue) Close() {
@@ -64,11 +62,8 @@ func (q *queue) Close() {
 }
 
 func (q *queue) Read() (PacketInfo, bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
 	select {
 	case p := <-q.c:
-		q.numRead++
 		return p, true
 	default:
 		return PacketInfo{}, false
@@ -82,9 +77,6 @@ func (q *queue) ReadContext(ctx context.Context) (PacketInfo, bool) {
 	// still holds.
 	select {
 	case pkt := <-q.c:
-		q.mu.Lock()
-		defer q.mu.Unlock()
-		q.numRead++
 		return pkt, true
 	case <-ctx.Done():
 		return PacketInfo{}, false
@@ -96,13 +88,12 @@ func (q *queue) Write(p PacketInfo) bool {
 
 	// It's important to make sure nobody can see numWrite until we increment it,
 	// so numWrite >= numRead holds.
-	q.mu.Lock()
 	select {
 	case q.c <- p:
 		wrote = true
-		q.numWrite++
 	default:
 	}
+	q.mu.Lock()
 	notify := q.notify
 	q.mu.Unlock()
 
@@ -118,11 +109,7 @@ func (q *queue) Write(p PacketInfo) bool {
 func (q *queue) Num() int {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	n := q.numWrite - q.numRead
-	if n < 0 {
-		panic("numWrite < numRead")
-	}
-	return n
+	return len(q.c)
 }
 
 func (q *queue) AddNotify(notify Notification) *NotificationHandle {

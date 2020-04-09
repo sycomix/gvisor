@@ -40,7 +40,7 @@ func TestFastRecovery(t *testing.T) {
 
 	c.CreateConnected(789, 30000, -1 /* epRcvBuf */)
 
-	const iterations = 7
+	const iterations = 3
 	data := buffer.NewView(2 * maxPayload * (tcp.InitialCwnd << (iterations + 1)))
 	for i := range data {
 		data[i] = byte(i)
@@ -86,6 +86,8 @@ func TestFastRecovery(t *testing.T) {
 	// Receive the retransmitted packet.
 	c.ReceiveAndCheckPacket(data, rtxOffset, maxPayload)
 
+	// Wait before checking metrics.
+	time.Sleep(10 * time.Millisecond)
 	if got, want := c.Stack().Stats().TCP.FastRetransmit.Value(), uint64(1); got != want {
 		t.Errorf("got stats.TCP.FastRetransmit.Value = %v, want = %v", got, want)
 	}
@@ -117,6 +119,8 @@ func TestFastRecovery(t *testing.T) {
 	// Receive the retransmit due to partial ack.
 	c.ReceiveAndCheckPacket(data, rtxOffset, maxPayload)
 
+	// Wait before checking metrics.
+	time.Sleep(10 * time.Millisecond)
 	if got, want := c.Stack().Stats().TCP.FastRetransmit.Value(), uint64(2); got != want {
 		t.Errorf("got stats.TCP.FastRetransmit.Value = %v, want = %v", got, want)
 	}
@@ -192,7 +196,7 @@ func TestExponentialIncreaseDuringSlowStart(t *testing.T) {
 
 	c.CreateConnected(789, 30000, -1 /* epRcvBuf */)
 
-	const iterations = 7
+	const iterations = 3
 	data := buffer.NewView(maxPayload * (tcp.InitialCwnd << (iterations + 1)))
 	for i := range data {
 		data[i] = byte(i)
@@ -234,7 +238,7 @@ func TestCongestionAvoidance(t *testing.T) {
 
 	c.CreateConnected(789, 30000, -1 /* epRcvBuf */)
 
-	const iterations = 7
+	const iterations = 3
 	data := buffer.NewView(2 * maxPayload * (tcp.InitialCwnd << (iterations + 1)))
 	for i := range data {
 		data[i] = byte(i)
@@ -338,7 +342,7 @@ func TestCubicCongestionAvoidance(t *testing.T) {
 
 	c.CreateConnected(789, 30000, -1 /* epRcvBuf */)
 
-	const iterations = 7
+	const iterations = 3
 	data := buffer.NewView(2 * maxPayload * (tcp.InitialCwnd << (iterations + 1)))
 
 	for i := range data {
@@ -447,7 +451,7 @@ func TestRetransmit(t *testing.T) {
 
 	c.CreateConnected(789, 30000, -1 /* epRcvBuf */)
 
-	const iterations = 7
+	const iterations = 3
 	data := buffer.NewView(maxPayload * (tcp.InitialCwnd << (iterations + 1)))
 	for i := range data {
 		data[i] = byte(i)

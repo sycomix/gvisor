@@ -133,6 +133,11 @@ type Context struct {
 	// WindowScale is the expected window scale in SYN packets sent by
 	// the stack.
 	WindowScale uint8
+
+	// oldMinRTO is the global minimum RTO at the time the context was
+	// created. The context restores the global minimum RTO to this value
+	// in context.Cleanup.
+	oldMinRTO time.Duration
 }
 
 // New allocates and initializes a test context containing a new
@@ -191,11 +196,19 @@ func New(t *testing.T, mtu uint32) *Context {
 		},
 	})
 
+	// Increase minimum RTO in tests to avoid test flakes due to early
+	// retransmit in case the test executors are overloaded and cause timers
+	// to fire earlier than expected.
+	//
+	// We restore the value in context.Cleanup.
+	oldMinRTO := tcp.MinRTO
+	tcp.MinRTO = 3 * time.Second
 	return &Context{
 		t:           t,
 		s:           s,
 		linkEP:      ep,
 		WindowScale: uint8(tcp.FindWndScale(tcp.DefaultReceiveBufferSize)),
+		oldMinRTO:   oldMinRTO,
 	}
 }
 
@@ -205,6 +218,7 @@ func (c *Context) Cleanup() {
 		c.EP.Close()
 	}
 	c.Stack().Close()
+	tcp.MinRTO = c.oldMinRTO
 }
 
 // Stack returns a reference to the stack in the Context.
@@ -217,7 +231,8 @@ func (c *Context) Stack() *stack.Stack {
 func (c *Context) CheckNoPacketTimeout(errMsg string, wait time.Duration) {
 	c.t.Helper()
 
-	ctx, _ := context.WithTimeout(context.Background(), wait)
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
 	if _, ok := c.linkEP.ReadContext(ctx); ok {
 		c.t.Fatal(errMsg)
 	}
@@ -235,7 +250,8 @@ func (c *Context) CheckNoPacket(errMsg string) {
 func (c *Context) GetPacket() []byte {
 	c.t.Helper()
 
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	p, ok := c.linkEP.ReadContext(ctx)
 	if !ok {
 		c.t.Fatalf("Packet wasn't written out")
@@ -415,6 +431,8 @@ func (c *Context) SendAckWithSACK(seq seqnum.Value, bytesReceived int, sackBlock
 // verifies that the packet packet payload of packet matches the slice
 // of data indicated by offset & size.
 func (c *Context) ReceiveAndCheckPacket(data []byte, offset, size int) {
+	c.t.Helper()
+
 	c.ReceiveAndCheckPacketWithOptions(data, offset, size, 0)
 }
 
@@ -423,6 +441,8 @@ func (c *Context) ReceiveAndCheckPacket(data []byte, offset, size int) {
 // data indicated by offset & size and skips optlen bytes in addition to the IP
 // TCP headers when comparing the data.
 func (c *Context) ReceiveAndCheckPacketWithOptions(data []byte, offset, size, optlen int) {
+	c.t.Helper()
+
 	b := c.GetPacket()
 	checker.IPv4(c.t, b,
 		checker.PayloadLen(size+header.TCPMinimumSize+optlen),
@@ -445,6 +465,8 @@ func (c *Context) ReceiveAndCheckPacketWithOptions(data []byte, offset, size, op
 // data indicated by offset & size. It returns true if a packet was received and
 // processed.
 func (c *Context) ReceiveNonBlockingAndCheckPacket(data []byte, offset, size int) bool {
+	c.t.Helper()
+
 	b := c.GetPacketNonBlocking()
 	if b == nil {
 		return false
@@ -486,7 +508,8 @@ func (c *Context) CreateV6Endpoint(v6only bool) {
 func (c *Context) GetV6Packet() []byte {
 	c.t.Helper()
 
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	p, ok := c.linkEP.ReadContext(ctx)
 	if !ok {
 		c.t.Fatalf("Packet wasn't written out")
@@ -567,6 +590,8 @@ func (c *Context) CreateConnected(iss seqnum.Value, rcvWnd seqnum.Size, epRcvBuf
 //
 // PreCondition: c.EP must already be created.
 func (c *Context) Connect(iss seqnum.Value, rcvWnd seqnum.Size, options []byte) {
+	c.t.Helper()
+
 	// Start connection attempt.
 	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
 	c.WQ.EventRegister(&waitEntry, waiter.EventOut)
